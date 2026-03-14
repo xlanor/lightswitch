@@ -11,6 +11,7 @@ members = [
     "lightswitch-proto",
     "lightswitch-capabilities",
     "lightswitch-metadata",
+    "lightswitch-metadata-k8s",
     "lightswitch-object"
 ]
 
@@ -30,6 +31,10 @@ libbpf-cargo = { version = "0.26.1" }
 glob = "0.3.3"
 ring = "0.17.14"
 libbpf-sys = "1.6.3"
+kube = { version = "3.0.1", features = ["runtime", "client"] }
+k8s-openapi = { version = "0.27.1", features = ["latest"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "sync", "time"] }
+futures = "0.3.32"
 
 [dependencies]
 gimli = "0.33.0"
@@ -41,7 +46,11 @@ tracing-subscriber = "0.3.22"
 inferno = "0.12.6"
 primal = "0.3.3"
 prost = "0.14" # Needed to encode protocol buffers to bytes.
-reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls", "json"], default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+base64 = "0.22.1"
+flate2 = "1.1.4"
+uuid = { version = "1.18.1", features = ["v4"] }
 ctrlc = "3.5.2"
 crossbeam-channel = "0.5.15"
 itertools = "0.14.0"
@@ -62,6 +71,7 @@ nix = { workspace = true, features = ["user"] }
 parking_lot = { version = "0.12.5", features = ["deadlock_detection"] }
 ring = { workspace = true }
 flamelens = { version = "0.4.0", default-features = false }
+lightswitch-metadata-k8s = { path = "lightswitch-metadata-k8s", version = "0.1.0", optional = true }
 
 [dev-dependencies]
 assert_cmd = { version = "2.2.0" }
@@ -82,6 +92,9 @@ opt-level = 3
 inherits = "release"
 lto = true
 codegen-units = 1
+
+[features]
+kubernetes = ["lightswitch-metadata-k8s"]
 
 [[bench]]
 name = "benchmark"

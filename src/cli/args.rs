@@ -41,6 +41,7 @@ pub(crate) enum ProfileSender {
     #[default]
     LocalDisk,
     Remote,
+    Pyroscope,
 }
 
 #[derive(PartialEq, clap::ValueEnum, Debug, Clone, Default)]
@@ -111,8 +112,14 @@ pub(crate) struct CliArgs {
     pub(crate) sender: ProfileSender,
     #[arg(long)]
     pub(crate) server_url: Option<String>,
+    #[arg(long, default_value = "/v2/pprof/new")]
+    pub(crate) ingest_path: String,
     #[arg(long)]
     pub(crate) token: Option<String>,
+    #[arg(long, default_value = "lightswitch")]
+    pub(crate) pyroscope_app_name: String,
+    #[arg(long)]
+    pub(crate) pyroscope_tenant_id: Option<String>,
     // Buffer Sizes with defaults
     #[arg(long, default_value_t = ProfilerConfig::default().perf_buffer_bytes, value_name = "PERF_BUFFER_BYTES",
           help="Size of each profiler perf buffer, in bytes (must be a power of 2)",
@@ -170,6 +177,10 @@ pub(crate) struct CliArgs {
     pub(crate) preload_thread_metadata: bool,
     #[arg(long, help = "Launch live flamegraph TUI")]
     pub(crate) live: bool,
+    #[arg(long, help = "enable Kubernetes metadata enrichment")]
+    pub(crate) kubernetes: bool,
+    #[arg(long, help = "Kubernetes node name (defaults to NODE_NAME env var)")]
+    pub(crate) kubernetes_node_name: Option<String>,
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 }

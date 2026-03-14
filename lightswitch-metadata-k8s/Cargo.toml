@@ -1,0 +1,18 @@
+[package]
+name = "lightswitch-metadata-k8s"
+version = "0.1.0"
+edition = "2021"
+description = "Kubernetes metadata provider for lightswitch profiler"
+license = "MIT"
+repository = "https://github.com/javierhonduco/lightswitch"
+
+[dependencies]
+lightswitch-metadata = { path = "../lightswitch-metadata", version = "0.2.2" }
+kube = { workspace = true }
+k8s-openapi = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+procfs = { workspace = true }
+thiserror = { workspace = true }
+lru = "0.16.3"

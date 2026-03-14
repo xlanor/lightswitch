@@ -15,8 +15,11 @@ use crossbeam_channel::bounded;
 use crossbeam_channel::tick;
 use inferno::flamegraph;
 use lightswitch::collector::{
-    AggregatorCollector, Collector, LiveCollector, NullCollector, StreamingCollector,
+    AggregatorCollector, Collector, LiveCollector, NullCollector, PyroscopeCollector,
+    StreamingCollector,
 };
+#[cfg(feature = "kubernetes")]
+use lightswitch::collector::{K8sCollector, PodLabels};
 use lightswitch::debug_info::DebugInfoManager;
 use nix::unistd::Uid;
 use tracing::{debug, error, info, Level};
@@ -166,6 +169,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let metadata_provider: ThreadSafeGlobalMetadataProvider =
         Arc::new(Mutex::new(GlobalMetadataProvider::default()));
 
+    let node_name: Option<String> = args
+        .kubernetes_node_name
+        .clone()
+        .or_else(|| std::env::var("NODE_NAME").ok());
+
+    #[cfg(feature = "kubernetes")]
+    if args.kubernetes {
+        let node = node_name
+            .clone()
+            .expect("kubernetes node name must be set via --kubernetes-node-name or NODE_NAME env var");
+
+        let k8s_provider = lightswitch_metadata_k8s::K8sMetadataProvider::new(node)
+            .expect("failed to initialize kubernetes metadata provider");
+
+        metadata_provider
+            .lock()
+            .unwrap()
+            .register_task_metadata_providers(vec![Box::new(k8s_provider)]);
+
+        info!("kubernetes metadata provider enabled");
+    }
+
     let token = args.token;
     let debug_info_manager: Box<dyn DebugInfoManager + Send> = match args.debug_info_backend {
         DebugInfoBackend::None => Box::new(DebugInfoBackendNull {}),
@@ -271,14 +296,89 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    #[cfg(feature = "kubernetes")]
+    let use_k8s = args.kubernetes;
+    #[cfg(not(feature = "kubernetes"))]
+    let use_k8s = false;
+
     let collector: Arc<Mutex<Box<dyn Collector + Send>>> =
         Arc::new(Mutex::new(match args.sender {
             ProfileSender::None => Box::new(NullCollector::new()),
             ProfileSender::LocalDisk => Box::new(AggregatorCollector::new()),
+            ProfileSender::Remote if use_k8s => {
+                #[cfg(feature = "kubernetes")]
+                {
+                    let local_symbolizer = args.symbolizer == Symbolizer::Local;
+                    let server_url = server_url.clone();
+                    let ingest_path = args.ingest_path.clone();
+                    let sample_freq = args.sample_freq;
+                    let mp = metadata_provider.clone();
+                    let factory: Box<
+                        dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send,
+                    > = Box::new(move |_pod_labels: Option<PodLabels>| {
+                        Box::new(StreamingCollector::new(
+                            None,
+                            local_symbolizer,
+                            &server_url,
+                            &ingest_path,
+                            ProfilerConfig::default().session_duration,
+                            sample_freq,
+                            mp.clone(),
+                        ))
+                    });
+                    Box::new(K8sCollector::new(metadata_provider.clone(), factory))
+                }
+                #[cfg(not(feature = "kubernetes"))]
+                unreachable!()
+            }
             ProfileSender::Remote => Box::new(StreamingCollector::new(
                 token,
                 args.symbolizer == Symbolizer::Local,
                 &server_url,
+                &args.ingest_path,
+                ProfilerConfig::default().session_duration,
+                args.sample_freq,
+                metadata_provider.clone(),
+            )),
+            ProfileSender::Pyroscope if use_k8s => {
+                #[cfg(feature = "kubernetes")]
+                {
+                    let local_symbolizer = args.symbolizer == Symbolizer::Local;
+                    let server_url = server_url.clone();
+                    let node_name = node_name.clone();
+                    let tenant_id = args.pyroscope_tenant_id.clone();
+                    let sample_freq = args.sample_freq;
+                    let mp = metadata_provider.clone();
+                    let default_app_name = args.pyroscope_app_name.clone();
+                    let factory: Box<
+                        dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send,
+                    > = Box::new(move |pod_labels: Option<PodLabels>| {
+                        let service_name = match &pod_labels {
+                            Some(pl) => format!("{}/{}", pl.namespace, pl.pod_name),
+                            None => default_app_name.clone(),
+                        };
+                        Box::new(PyroscopeCollector::new(
+                            local_symbolizer,
+                            &server_url,
+                            &service_name,
+                            node_name.clone(),
+                            tenant_id.clone(),
+                            ProfilerConfig::default().session_duration,
+                            sample_freq,
+                            mp.clone(),
+                        ))
+                    });
+                    Box::new(K8sCollector::new(metadata_provider.clone(), factory))
+                }
+                #[cfg(not(feature = "kubernetes"))]
+                unreachable!()
+            }
+            ProfileSender::Pyroscope => Box::new(PyroscopeCollector::new(
+                args.symbolizer == Symbolizer::Local,
+                &server_url,
+                &args.pyroscope_app_name,
+                node_name.clone(),
+                args.pyroscope_tenant_id.clone(),
                 ProfilerConfig::default().session_duration,
                 args.sample_freq,
                 metadata_provider.clone(),
@@ -298,7 +398,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // If we need to send the profile to the backend there's nothing else to do.
     match args.sender {
-        ProfileSender::Remote | ProfileSender::None => {
+        ProfileSender::Remote | ProfileSender::Pyroscope | ProfileSender::None => {
             return Ok(());
         }
         _ => {}
