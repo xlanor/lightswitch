@@ -26,8 +26,7 @@ impl K8sPodCache {
         let container_to_pod: Arc<RwLock<HashMap<String, PodMetadata>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to create tokio runtime");

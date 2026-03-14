@@ -1,11 +1,8 @@
 use std::any::{Any, TypeId};
-use std::sync::Mutex;
 
 use lightswitch_metadata::types::{
     MetadataLabel, TaskKey, TaskMetadataProvider, TaskMetadataProviderError,
 };
-use lru::LruCache;
-use std::num::NonZeroUsize;
 use tracing::debug;
 
 use crate::cgroup::container_id_from_pid;
@@ -13,7 +10,6 @@ use crate::k8s_client::{K8sPodCache, PodMetadata};
 
 pub struct K8sMetadataProvider {
     pod_cache: K8sPodCache,
-    pid_container_cache: Mutex<LruCache<i32, Option<String>>>,
     node_name: String,
 }
 
@@ -23,24 +19,12 @@ impl K8sMetadataProvider {
 
         Ok(Self {
             pod_cache,
-            pid_container_cache: Mutex::new(LruCache::new(NonZeroUsize::new(10000).unwrap())),
             node_name,
         })
     }
-}
 
-impl K8sMetadataProvider {
     fn resolve_pod_metadata(&self, pid: i32) -> Option<PodMetadata> {
-        let container_id = {
-            let mut cache = self.pid_container_cache.lock().unwrap();
-            if let Some(cached) = cache.get(&pid) {
-                cached.clone()
-            } else {
-                let id = container_id_from_pid(pid);
-                cache.push(pid, id.clone());
-                id
-            }
-        }?;
+        let container_id = container_id_from_pid(pid)?;
 
         let meta = self.pod_cache.get_pod_metadata(&container_id);
         if meta.is_none() {
