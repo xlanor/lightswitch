@@ -18,7 +18,6 @@ pub struct PodMetadata {
 
 pub struct K8sPodCache {
     container_to_pod: Arc<RwLock<HashMap<String, PodMetadata>>>,
-    _runtime: tokio::runtime::Runtime,
 }
 
 impl K8sPodCache {
@@ -26,21 +25,24 @@ impl K8sPodCache {
         let container_to_pod: Arc<RwLock<HashMap<String, PodMetadata>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create tokio runtime");
-
         let cache = container_to_pod.clone();
-        runtime.spawn(async move {
-            if let Err(e) = run_informer(node_name, cache).await {
-                error!("pod informer failed: {}", e);
-            }
-        });
+        std::thread::Builder::new()
+            .name("k8s-pod-informer".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create tokio runtime");
+                runtime.block_on(async move {
+                    if let Err(e) = run_informer(node_name, cache).await {
+                        error!("pod informer failed: {}", e);
+                    }
+                });
+            })
+            .expect("failed to spawn pod informer thread");
 
         Ok(Self {
             container_to_pod,
-            _runtime: runtime,
         })
     }
 
