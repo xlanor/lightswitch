@@ -3,6 +3,7 @@ use crate::task_metadata::TaskMetadata;
 use crate::types::{MetadataLabel, SystemMetadataProvider, TaskKey, TaskMetadataProvider};
 
 use lru::LruCache;
+use std::any::{Any, TypeId};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tracing::warn;
@@ -104,6 +105,18 @@ impl GlobalMetadataProvider {
         }
     }
 
+    pub fn get_typed<T: Any + Send + 'static>(&self, task_key: TaskKey) -> Option<T> {
+        let type_id = TypeId::of::<T>();
+        for provider in &self.custom_task_metadata_providers {
+            if let Some(boxed) = provider.get_typed_metadata(task_key, type_id) {
+                if let Ok(typed) = boxed.downcast::<T>() {
+                    return Some(*typed);
+                }
+            }
+        }
+        None
+    }
+
     pub fn register_task(&mut self, task_key: TaskKey) {
         if !self.process_label_cache.contains(&task_key) {
             let labels = self.get_labels(task_key);
@@ -118,6 +131,79 @@ mod tests {
     use crate::taskname::TaskName;
     use crate::types::MetadataLabelValue;
     use nix::unistd;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct FakeMetadata {
+        name: String,
+    }
+
+    struct FakeProvider;
+
+    impl TaskMetadataProvider for FakeProvider {
+        fn get_metadata(
+            &self,
+            _task_key: TaskKey,
+        ) -> Result<Vec<MetadataLabel>, crate::types::TaskMetadataProviderError> {
+            Ok(vec![])
+        }
+
+        fn get_typed_metadata(
+            &self,
+            _task_key: TaskKey,
+            type_id: TypeId,
+        ) -> Option<Box<dyn Any + Send>> {
+            if type_id == TypeId::of::<FakeMetadata>() {
+                Some(Box::new(FakeMetadata {
+                    name: "test-pod".into(),
+                }))
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_typed_returns_matching_type() {
+        let provider = GlobalMetadataProvider::new(
+            NonZeroUsize::new(100).unwrap(),
+            vec![],
+            vec![Box::new(FakeProvider)],
+        );
+        let task_key = TaskKey { pid: 1, tid: 1 };
+
+        let result = provider.get_typed::<FakeMetadata>(task_key);
+
+        assert_eq!(
+            result,
+            Some(FakeMetadata {
+                name: "test-pod".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_get_typed_returns_none_for_wrong_type() {
+        let provider = GlobalMetadataProvider::new(
+            NonZeroUsize::new(100).unwrap(),
+            vec![],
+            vec![Box::new(FakeProvider)],
+        );
+        let task_key = TaskKey { pid: 1, tid: 1 };
+
+        let result = provider.get_typed::<String>(task_key);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_typed_returns_none_without_providers() {
+        let provider = GlobalMetadataProvider::default();
+        let task_key = TaskKey { pid: 1, tid: 1 };
+
+        let result = provider.get_typed::<FakeMetadata>(task_key);
+
+        assert!(result.is_none());
+    }
 
     #[test]
     fn test_get_metadata_returns_minimal_labels() {

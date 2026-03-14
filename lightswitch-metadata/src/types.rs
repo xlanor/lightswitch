@@ -1,3 +1,4 @@
+use std::any::{Any, TypeId};
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
 
@@ -49,11 +50,18 @@ pub enum TaskMetadataProviderError {
 }
 
 pub trait TaskMetadataProvider {
-    /// Return a vector of labels that apply to the provided task_key.
     fn get_metadata(
         &self,
         task_key: TaskKey,
     ) -> Result<Vec<MetadataLabel>, TaskMetadataProviderError>;
+
+    fn get_typed_metadata(
+        &self,
+        _task_key: TaskKey,
+        _type_id: TypeId,
+    ) -> Option<Box<dyn Any + Send>> {
+        None
+    }
 }
 
 #[derive(Debug, Error)]
