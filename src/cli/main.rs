@@ -19,7 +19,9 @@ use lightswitch::collector::{
     StreamingCollector,
 };
 #[cfg(feature = "kubernetes")]
-use lightswitch::collector::{K8sCollector, PodLabels};
+use lightswitch::collector::K8sCollector;
+#[cfg(feature = "kubernetes")]
+use lightswitch_metadata_k8s::PodMetadata;
 use lightswitch::debug_info::DebugInfoManager;
 use nix::unistd::Uid;
 use tracing::{debug, error, info, Level};
@@ -314,8 +316,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let sample_freq = args.sample_freq;
                     let mp = metadata_provider.clone();
                     let factory: Box<
-                        dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send,
-                    > = Box::new(move |_pod_labels: Option<PodLabels>| {
+                        dyn Fn(Option<PodMetadata>) -> Box<dyn Collector + Send> + Send,
+                    > = Box::new(move |_pod_meta: Option<PodMetadata>| {
                         Box::new(StreamingCollector::new(
                             None,
                             local_symbolizer,
@@ -351,10 +353,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let mp = metadata_provider.clone();
                     let default_app_name = args.pyroscope_app_name.clone();
                     let factory: Box<
-                        dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send,
-                    > = Box::new(move |pod_labels: Option<PodLabels>| {
-                        let service_name = match &pod_labels {
-                            Some(pl) => format!("{}/{}", pl.namespace, pl.pod_name),
+                        dyn Fn(Option<PodMetadata>) -> Box<dyn Collector + Send> + Send,
+                    > = Box::new(move |pod_meta: Option<PodMetadata>| {
+                        let service_name = match &pod_meta {
+                            Some(pm) => format!("{}/{}", pm.namespace, pm.pod_name),
                             None => default_app_name.clone(),
                         };
                         Box::new(PyroscopeCollector::new(

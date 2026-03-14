@@ -1,3 +1,4 @@
+use std::any::{Any, TypeId};
 use std::sync::Mutex;
 
 use lightswitch_metadata::types::{
@@ -8,7 +9,7 @@ use std::num::NonZeroUsize;
 use tracing::debug;
 
 use crate::cgroup::container_id_from_pid;
-use crate::k8s_client::K8sPodCache;
+use crate::k8s_client::{K8sPodCache, PodMetadata};
 
 pub struct K8sMetadataProvider {
     pod_cache: K8sPodCache,
@@ -28,36 +29,38 @@ impl K8sMetadataProvider {
     }
 }
 
+impl K8sMetadataProvider {
+    fn resolve_pod_metadata(&self, pid: i32) -> Option<PodMetadata> {
+        let container_id = {
+            let mut cache = self.pid_container_cache.lock().unwrap();
+            if let Some(cached) = cache.get(&pid) {
+                cached.clone()
+            } else {
+                let id = container_id_from_pid(pid);
+                cache.push(pid, id.clone());
+                id
+            }
+        }?;
+
+        let meta = self.pod_cache.get_pod_metadata(&container_id);
+        if meta.is_none() {
+            debug!(
+                "no pod metadata found for container {} (pid {})",
+                container_id, pid
+            );
+        }
+        meta
+    }
+}
+
 impl TaskMetadataProvider for K8sMetadataProvider {
     fn get_metadata(
         &self,
         task_key: TaskKey,
     ) -> Result<Vec<MetadataLabel>, TaskMetadataProviderError> {
-        let container_id = {
-            let mut cache = self.pid_container_cache.lock().unwrap();
-            if let Some(cached) = cache.get(&task_key.pid) {
-                cached.clone()
-            } else {
-                let id = container_id_from_pid(task_key.pid);
-                cache.push(task_key.pid, id.clone());
-                id
-            }
-        };
-
-        let container_id = match container_id {
-            Some(id) => id,
-            None => return Ok(vec![]),
-        };
-
-        let pod_meta = match self.pod_cache.get_pod_metadata(&container_id) {
+        let pod_meta = match self.resolve_pod_metadata(task_key.pid) {
             Some(meta) => meta,
-            None => {
-                debug!(
-                    "no pod metadata found for container {} (pid {})",
-                    container_id, task_key.pid
-                );
-                return Ok(vec![]);
-            }
+            None => return Ok(vec![]),
         };
 
         let mut labels = vec![
@@ -81,5 +84,18 @@ impl TaskMetadataProvider for K8sMetadataProvider {
         }
 
         Ok(labels)
+    }
+
+    fn get_typed_metadata(
+        &self,
+        task_key: TaskKey,
+        type_id: TypeId,
+    ) -> Option<Box<dyn Any + Send>> {
+        if type_id == TypeId::of::<PodMetadata>() {
+            self.resolve_pod_metadata(task_key.pid)
+                .map(|m| Box::new(m) as Box<dyn Any + Send>)
+        } else {
+            None
+        }
     }
 }

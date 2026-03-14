@@ -23,7 +23,7 @@ use lightswitch_object::ExecutableId;
 use lightswitch_metadata::metadata_provider::ThreadSafeGlobalMetadataProvider;
 use lightswitch_metadata::types::TaskKey;
 #[cfg(feature = "kubernetes")]
-use lightswitch_metadata::types::{MetadataLabel, MetadataLabelValue};
+use lightswitch_metadata_k8s::PodMetadata;
 
 pub trait Collector {
     fn collect(
@@ -423,54 +423,12 @@ impl Collector for LiveCollector {
 }
 
 #[cfg(feature = "kubernetes")]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct PodLabels {
-    pub namespace: String,
-    pub pod_name: String,
-    pub node_name: Option<String>,
-    pub owner_kind: Option<String>,
-    pub owner_name: Option<String>,
-}
-
-#[cfg(feature = "kubernetes")]
-pub fn extract_pod_labels(labels: &[MetadataLabel]) -> Option<PodLabels> {
-    let mut namespace = None;
-    let mut pod_name = None;
-    let mut node_name = None;
-    let mut owner_kind = None;
-    let mut owner_name = None;
-
-    for label in labels {
-        let value = match &label.value {
-            MetadataLabelValue::String(s) => s.clone(),
-            _ => continue,
-        };
-        match label.key.as_str() {
-            "k8s.namespace.name" => namespace = Some(value),
-            "k8s.pod.name" => pod_name = Some(value),
-            "k8s.node.name" => node_name = Some(value),
-            "k8s.owner.kind" => owner_kind = Some(value),
-            "k8s.owner.name" => owner_name = Some(value),
-            _ => {}
-        }
-    }
-
-    Some(PodLabels {
-        namespace: namespace?,
-        pod_name: pod_name?,
-        node_name,
-        owner_kind,
-        owner_name,
-    })
-}
-
-#[cfg(feature = "kubernetes")]
 pub struct K8sCollector {
     metadata_provider: ThreadSafeGlobalMetadataProvider,
-    collector_factory: Box<dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send>,
+    collector_factory: Box<dyn Fn(Option<PodMetadata>) -> Box<dyn Collector + Send> + Send>,
     pod_collectors: HashMap<(String, String), Box<dyn Collector + Send>>,
     host_collector: Box<dyn Collector + Send>,
-    pid_cache: HashMap<i32, Option<PodLabels>>,
+    pid_cache: HashMap<i32, Option<PodMetadata>>,
     procs: HashMap<i32, ProcessInfo>,
     objs: HashMap<ExecutableId, ObjectFileInfo>,
 }
@@ -479,7 +437,7 @@ pub struct K8sCollector {
 impl K8sCollector {
     pub fn new(
         metadata_provider: ThreadSafeGlobalMetadataProvider,
-        collector_factory: Box<dyn Fn(Option<PodLabels>) -> Box<dyn Collector + Send> + Send>,
+        collector_factory: Box<dyn Fn(Option<PodMetadata>) -> Box<dyn Collector + Send> + Send>,
     ) -> Self {
         let host_collector = collector_factory(None);
         Self {
@@ -493,18 +451,17 @@ impl K8sCollector {
         }
     }
 
-    fn resolve_pid(&mut self, pid: i32, tid: i32) -> Option<PodLabels> {
+    fn resolve_pid(&mut self, pid: i32, tid: i32) -> Option<PodMetadata> {
         if let Some(cached) = self.pid_cache.get(&pid) {
             return cached.clone();
         }
-        let labels = self
+        let pod_meta = self
             .metadata_provider
             .lock()
             .unwrap()
-            .get_metadata(TaskKey { pid, tid });
-        let pod_labels = extract_pod_labels(&labels);
-        self.pid_cache.insert(pid, pod_labels.clone());
-        pod_labels
+            .get_typed::<PodMetadata>(TaskKey { pid, tid });
+        self.pid_cache.insert(pid, pod_meta.clone());
+        pod_meta
     }
 }
 
@@ -525,8 +482,8 @@ impl Collector for K8sCollector {
         }
         let total_samples = profile.len();
         for sample in profile {
-            let pod_labels = self.resolve_pid(sample.sample.pid, sample.sample.tid);
-            let key = pod_labels.map(|pl| (pl.namespace.clone(), pl.pod_name.clone()));
+            let pod_meta = self.resolve_pid(sample.sample.pid, sample.sample.tid);
+            let key = pod_meta.map(|pm| (pm.namespace.clone(), pm.pod_name.clone()));
             unique_pids.insert(sample.sample.pid, key.clone());
             grouped.entry(key).or_default().push(sample);
         }
