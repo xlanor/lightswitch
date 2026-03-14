@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use futures::{StreamExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, ListParams};
+use kube::api::Api;
 use kube::runtime::{watcher, WatchStreamExt};
 use kube::Client;
 use tracing::{debug, error, info, warn};
@@ -69,18 +69,25 @@ async fn run_informer(
 
     let mut stream = watcher(pods, watcher_config)
         .default_backoff()
-        .applied_objects()
         .boxed();
 
     while let Some(event) = stream.try_next().await? {
-        handle_pod_event(&cache, event);
+        match event {
+            watcher::Event::Apply(pod) | watcher::Event::InitApply(pod) => {
+                handle_pod_apply(&cache, pod);
+            }
+            watcher::Event::Delete(pod) => {
+                handle_pod_delete(&cache, pod);
+            }
+            watcher::Event::Init | watcher::Event::InitDone => {}
+        }
     }
 
     warn!("pod informer stream ended");
     Ok(())
 }
 
-fn handle_pod_event(cache: &Arc<RwLock<HashMap<String, PodMetadata>>>, pod: Pod) {
+fn handle_pod_apply(cache: &Arc<RwLock<HashMap<String, PodMetadata>>>, pod: Pod) {
     let metadata = pod.metadata;
     let pod_name = match metadata.name {
         Some(ref name) => name.clone(),
@@ -123,6 +130,38 @@ fn handle_pod_event(cache: &Arc<RwLock<HashMap<String, PodMetadata>>>, pod: Pod)
             if let Some(id) = parse_container_id(container_id) {
                 debug!("mapping container {} to pod {}", id, pod_meta.pod_name);
                 cache.insert(id, pod_meta.clone());
+            }
+        }
+    }
+}
+
+fn handle_pod_delete(cache: &Arc<RwLock<HashMap<String, PodMetadata>>>, pod: Pod) {
+    let pod_name = match pod.metadata.name {
+        Some(ref name) => name.as_str(),
+        None => return,
+    };
+
+    let status = match pod.status {
+        Some(ref s) => s,
+        None => return,
+    };
+
+    let mut cache = match cache.write() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let all_statuses = status
+        .container_statuses
+        .iter()
+        .flatten()
+        .chain(status.init_container_statuses.iter().flatten());
+
+    for cs in all_statuses {
+        if let Some(ref container_id) = cs.container_id {
+            if let Some(id) = parse_container_id(container_id) {
+                debug!("removing container {} for deleted pod {}", id, pod_name);
+                cache.remove(&id);
             }
         }
     }
